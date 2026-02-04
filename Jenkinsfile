@@ -18,7 +18,7 @@ pipeline {
 
   options {
     timestamps()                   // Prefix console logs with timestamps
-    ansiColor('xterm')             // Colored output for readability
+   // ansiColor('xterm')             // Colored output for readability
     buildDiscarder(logRotator(numToKeepStr: '30')) // Keep last 30 builds
   }
 
