@@ -1,48 +1,46 @@
+// Jenkinsfile — Next.js CI-only using Docker agent on Windows
+// - Runs inside Docker image: node:20-bullseye
+// - Poll SCM every 5 minutes
+// - npm ci/install -> optional lint/test -> build -> archive
+// - Windows-safe post section
 
 pipeline {
-  // Use a containerized Node.js environment for consistent builds
   agent {
     docker {
-      image 'node:20-bullseye'     // Stable Node 20 with build tools
-      args  '-u root:root'         // Avoid permission issues with npm cache on some agents
-      reuseNode true               // Keeps workspace between stages for speed
+      image 'node:20-bullseye'
+      args  '-u root:root'     // avoids npm cache permission issues
+      reuseNode true
     }
   }
 
-  // Automatically check Git for changes on a schedule (Poll SCM)
+  options {
+    timestamps()
+    // ansiColor('xterm')
+    buildDiscarder(logRotator(numToKeepStr: '30'))
+  }
+
   triggers {
-    // Jenkins cron syntax: MINUTE HOUR DOM MONTH DOW
-    // H/5 * * * * = Poll approximately every 5 minutes with hash-spread (H) per job
+    // Poll approximately every 5 minutes
     pollSCM('H/5 * * * *')
   }
 
-  options {
-    timestamps()                   // Prefix console logs with timestamps
-   // ansiColor('xterm')             // Colored output for readability
-    buildDiscarder(logRotator(numToKeepStr: '30')) // Keep last 30 builds
-  }
-
   environment {
-    CI = 'true'                    // Standard CI flag for tools
-    NEXT_TELEMETRY_DISABLED = '1'  // Disable Next.js telemetry in CI
-    // If you ever hit memory issues on large builds, uncomment:
-    // NODE_OPTIONS = '--max-old-space-size=3072'
+    CI = 'true'
+    NEXT_TELEMETRY_DISABLED = '1'
+    // NODE_OPTIONS = '--max-old-space-size=3072' // uncomment if you hit memory issues
   }
 
   stages {
-
     stage('Checkout') {
       steps {
-        // Pull source code from the same SCM configured in the job
         checkout scm
-        // Print versions for debugging
+        // Inside container, it's Linux, so sh is fine here
         sh 'node -v && npm -v'
       }
     }
 
     stage('Install dependencies') {
       steps {
-        // Use npm ci when lockfile is present for reproducible builds; fall back to npm install otherwise
         sh '''
           set -euxo pipefail
           if [ -f package-lock.json ]; then
@@ -54,31 +52,29 @@ pipeline {
       }
     }
 
-    stage('Lint (if script exists)') {
+    stage('Lint (if exists)') {
       steps {
-        // Only run lint if package.json has a "lint" script
         sh '''
           set -e
           if node -e "process.exit(!(require('./package.json').scripts||{}).lint ? 0 : 1)"; then
             echo "Running: npm run lint"
             npm run lint
           else
-            echo "No lint script found; skipping."
+            echo "No lint script; skipping."
           fi
         '''
       }
     }
 
-    stage('Test (if script exists)') {
+    stage('Test (if exists)') {
       steps {
-        // Only run tests if package.json has a "test" script
         sh '''
           set -e
           if node -e "process.exit(!(require('./package.json').scripts||{}).test ? 0 : 1)"; then
             echo "Running: npm test --if-present"
             npm test --if-present
           else
-            echo "No test script found; skipping."
+            echo "No test script; skipping."
           fi
         '''
       }
@@ -86,7 +82,6 @@ pipeline {
 
     stage('Build (Next.js production)') {
       steps {
-        // Build your Next.js app (generates .next)
         sh '''
           set -euxo pipefail
           npm run build
@@ -96,7 +91,6 @@ pipeline {
 
     stage('Archive build artifacts') {
       steps {
-        // Store build outputs so you can download/inspect them from Jenkins
         archiveArtifacts artifacts: '.next/**', fingerprint: true, onlyIfSuccessful: true
       }
     }
@@ -110,8 +104,18 @@ pipeline {
       echo '❌ CI build failed. Check the stage logs above.'
     }
     always {
-      // Show workspace size for debugging storage issues (non-blocking)
-      sh 'du -sh . || true'
+      // Guard for Windows controller: run a safe command inside container only if we still have a workspace
+      script {
+        // Only run this if we are still inside a node/workspace context
+        echo 'Build workspace size (non-blocking):'
+        // Since our stages ran inside the docker agent (Linux), use sh here
+        // but guard in case the node context is lost
+        try {
+          sh 'du -sh . || true'
+        } catch (ignored) {
+          echo 'Skipping size check (no workspace context).'
+        }
+      }
     }
   }
 }
